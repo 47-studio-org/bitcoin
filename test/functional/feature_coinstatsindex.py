@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2020-2021 The Bitcoin Core developers
+# Copyright (c) 2020-2022 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test coinstatsindex across nodes.
@@ -156,9 +156,10 @@ class CoinStatsIndexTest(BitcoinTestFramework):
 
         # Generate and send another tx with an OP_RETURN output (which is unspendable)
         tx2 = self.wallet.create_self_transfer(utxo_to_spend=tx1_out_21)['tx']
-        tx2.vout = [CTxOut(int(Decimal('20.99') * COIN), CScript([OP_RETURN] + [OP_FALSE] * 30))]
+        tx2_val = '20.99'
+        tx2.vout = [CTxOut(int(Decimal(tx2_val) * COIN), CScript([OP_RETURN] + [OP_FALSE] * 30))]
         tx2_hex = tx2.serialize().hex()
-        self.nodes[0].sendrawtransaction(tx2_hex)
+        self.nodes[0].sendrawtransaction(tx2_hex, 0, tx2_val)
 
         # Include both txs in a block
         self.generate(self.nodes[0], 1)
@@ -221,7 +222,23 @@ class CoinStatsIndexTest(BitcoinTestFramework):
 
         self.generate(index_node, 1, sync_fun=self.no_op)
         res10 = index_node.gettxoutsetinfo('muhash')
-        assert(res8['txouts'] < res10['txouts'])
+        assert res8['txouts'] < res10['txouts']
+
+        self.log.info("Test that the index works with -reindex")
+
+        self.restart_node(1, extra_args=["-coinstatsindex", "-reindex"])
+        res11 = index_node.gettxoutsetinfo('muhash')
+        assert_equal(res11, res10)
+
+        self.log.info("Test that -reindex-chainstate is disallowed with coinstatsindex")
+
+        self.stop_node(1)
+        self.nodes[1].assert_start_raises_init_error(
+            expected_msg='Error: -reindex-chainstate option is not compatible with -coinstatsindex. '
+            'Please temporarily disable coinstatsindex while using -reindex-chainstate, or replace -reindex-chainstate with -reindex to fully rebuild all indexes.',
+            extra_args=['-coinstatsindex', '-reindex-chainstate'],
+        )
+        self.restart_node(1, extra_args=["-coinstatsindex"])
 
     def _test_use_index_option(self):
         self.log.info("Test use_index option for nodes running the index")
@@ -252,12 +269,12 @@ class CoinStatsIndexTest(BitcoinTestFramework):
         res2 = index_node.gettxoutsetinfo(hash_type='muhash', hash_or_height=112)
         assert_equal(res["bestblock"], block)
         assert_equal(res["muhash"], res2["muhash"])
-        assert(res["muhash"] != res_invalid["muhash"])
+        assert res["muhash"] != res_invalid["muhash"]
 
         # Test that requesting reorged out block by hash is still returning correct results
         res_invalid2 = index_node.gettxoutsetinfo(hash_type='muhash', hash_or_height=reorg_block)
         assert_equal(res_invalid2["muhash"], res_invalid["muhash"])
-        assert(res["muhash"] != res_invalid2["muhash"])
+        assert res["muhash"] != res_invalid2["muhash"]
 
         # Add another block, so we don't depend on reconsiderblock remembering which
         # blocks were touched by invalidateblock

@@ -14,12 +14,11 @@
     },
     "zeromq"
   ],
-  "builtin-baseline": "b86c0c35b88e2bf3557ff49dc831689c2f085090",
+  "builtin-baseline": "f14984af3738e69f197bf0e647a8dca12de92996",
   "overrides": [
     {
-      "name": "zeromq",
-      "version": "4.3.4",
-      "port-version": 3
+      "name": "libevent",
+      "version": "2.1.12#7"
     }
   ]
 }

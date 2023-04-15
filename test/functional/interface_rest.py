@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2021 The Bitcoin Core developers
+# Copyright (c) 2014-2022 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the REST API."""
@@ -7,9 +7,7 @@
 from decimal import Decimal
 from enum import Enum
 import http.client
-from io import BytesIO
 import json
-from struct import pack, unpack
 import typing
 import urllib.parse
 
@@ -96,7 +94,6 @@ class RESTTest (BitcoinTestFramework):
     def run_test(self):
         self.url = urllib.parse.urlparse(self.nodes[0].url)
         self.wallet = MiniWallet(self.nodes[0])
-        self.wallet.rescan_utxos()
 
         self.log.info("Broadcast test transaction and sync nodes")
         txid, _ = self.wallet.send_to(from_node=self.nodes[0], scriptPubKey=getnewdestination()[1], amount=int(0.1 * COIN))
@@ -161,12 +158,11 @@ class RESTTest (BitcoinTestFramework):
         bin_request = b'\x01\x02'
         for txid, n in [spending, spent]:
             bin_request += bytes.fromhex(txid)
-            bin_request += pack("i", n)
+            bin_request += n.to_bytes(4, 'little')
 
         bin_response = self.test_rest_request("/getutxos", http_method='POST', req_type=ReqType.BIN, body=bin_request, ret_type=RetType.BYTES)
-        output = BytesIO(bin_response)
-        chain_height, = unpack("<i", output.read(4))
-        response_hash = output.read(32)[::-1].hex()
+        chain_height = int.from_bytes(bin_response[0:4], 'little')
+        response_hash = bin_response[4:36][::-1].hex()
 
         assert_equal(bb_hash, response_hash)  # check if getutxo's chaintip during calculation was fine
         assert_equal(chain_height, 201)  # chain height must be 201 (pre-mined chain [200] + generated block [1])
@@ -219,7 +215,7 @@ class RESTTest (BitcoinTestFramework):
 
         self.generate(self.nodes[0], 1)  # generate block to not affect upcoming tests
 
-        self.log.info("Test the /block, /blockhashbyheight and /headers URIs")
+        self.log.info("Test the /block, /blockhashbyheight, /headers, and /blockfilterheaders URIs")
         bb_hash = self.nodes[0].getbestblockhash()
 
         # Check result if block does not exists
@@ -288,6 +284,10 @@ class RESTTest (BitcoinTestFramework):
 
         # See if we can get 5 headers in one response
         self.generate(self.nodes[1], 5)
+        expected_filter = {
+            'basic block filter index': {'synced': True, 'best_block_height': 208},
+        }
+        self.wait_until(lambda: self.nodes[0].getindexinfo() == expected_filter)
         json_obj = self.test_rest_request(f"/headers/{bb_hash}", query_params={"count": 5})
         assert_equal(len(json_obj), 5)  # now we should have 5 header objects
         json_obj = self.test_rest_request(f"/blockfilterheaders/basic/{bb_hash}", query_params={"count": 5})
@@ -299,6 +299,12 @@ class RESTTest (BitcoinTestFramework):
         rpc_blockfilter = self.nodes[0].getblockfilter(bb_hash)
         assert_equal(first_filter_header, rpc_blockfilter['header'])
         assert_equal(json_obj['filter'], rpc_blockfilter['filter'])
+
+        # Test blockfilterheaders with an invalid hash and filtertype
+        resp = self.test_rest_request(f"/blockfilterheaders/{INVALID_PARAM}/{bb_hash}", ret_type=RetType.OBJ, status=400)
+        assert_equal(resp.read().decode('utf-8').rstrip(), f"Unknown filtertype {INVALID_PARAM}")
+        resp = self.test_rest_request(f"/blockfilterheaders/basic/{INVALID_PARAM}", ret_type=RetType.OBJ, status=400)
+        assert_equal(resp.read().decode('utf-8').rstrip(), f"Invalid hash: {INVALID_PARAM}")
 
         # Test number parsing
         for num in ['5a', '-5', '0', '2001', '99999999999999999999999999999999999']:
@@ -324,12 +330,47 @@ class RESTTest (BitcoinTestFramework):
         # the size of the memory pool should be greater than 3x ~100 bytes
         assert_greater_than(json_obj['bytes'], 300)
 
+        mempool_info = self.nodes[0].getmempoolinfo()
+        assert_equal(json_obj, mempool_info)
+
         # Check that there are our submitted transactions in the TX memory pool
         json_obj = self.test_rest_request("/mempool/contents")
+        raw_mempool_verbose = self.nodes[0].getrawmempool(verbose=True)
+
+        assert_equal(json_obj, raw_mempool_verbose)
+
         for i, tx in enumerate(txs):
             assert tx in json_obj
             assert_equal(json_obj[tx]['spentby'], txs[i + 1:i + 2])
             assert_equal(json_obj[tx]['depends'], txs[i - 1:i])
+
+        # Check the mempool response for explicit parameters
+        json_obj = self.test_rest_request("/mempool/contents", query_params={"verbose": "true", "mempool_sequence": "false"})
+        assert_equal(json_obj, raw_mempool_verbose)
+
+        # Check the mempool response for not verbose
+        json_obj = self.test_rest_request("/mempool/contents", query_params={"verbose": "false"})
+        raw_mempool = self.nodes[0].getrawmempool(verbose=False)
+
+        assert_equal(json_obj, raw_mempool)
+
+        # Check the mempool response for sequence
+        json_obj = self.test_rest_request("/mempool/contents", query_params={"verbose": "false", "mempool_sequence": "true"})
+        raw_mempool = self.nodes[0].getrawmempool(verbose=False, mempool_sequence=True)
+
+        assert_equal(json_obj, raw_mempool)
+
+        # Check for error response if verbose=true and mempool_sequence=true
+        resp = self.test_rest_request("/mempool/contents", ret_type=RetType.OBJ, status=400, query_params={"verbose": "true", "mempool_sequence": "true"})
+        assert_equal(resp.read().decode('utf-8').strip(), 'Verbose results cannot contain mempool sequence values. (hint: set "verbose=false")')
+
+        # Check for error response if verbose is not "true" or "false"
+        resp = self.test_rest_request("/mempool/contents", ret_type=RetType.OBJ, status=400, query_params={"verbose": "TRUE"})
+        assert_equal(resp.read().decode('utf-8').strip(), 'The "verbose" query parameter must be either "true" or "false".')
+
+        # Check for error response if mempool_sequence is not "true" or "false"
+        resp = self.test_rest_request("/mempool/contents", ret_type=RetType.OBJ, status=400, query_params={"verbose": "false", "mempool_sequence": "TRUE"})
+        assert_equal(resp.read().decode('utf-8').strip(), 'The "mempool_sequence" query parameter must be either "true" or "false".')
 
         # Now mine the transactions
         newblockhash = self.generate(self.nodes[1], 1)
@@ -361,11 +402,26 @@ class RESTTest (BitcoinTestFramework):
         json_obj = self.test_rest_request("/chaininfo")
         assert_equal(json_obj['bestblockhash'], bb_hash)
 
+        # Compare with normal RPC getblockchaininfo response
+        blockchain_info = self.nodes[0].getblockchaininfo()
+        assert_equal(blockchain_info, json_obj)
+
         # Test compatibility of deprecated and newer endpoints
         self.log.info("Test compatibility of deprecated and newer endpoints")
         assert_equal(self.test_rest_request(f"/headers/{bb_hash}", query_params={"count": 1}), self.test_rest_request(f"/headers/1/{bb_hash}"))
         assert_equal(self.test_rest_request(f"/blockfilterheaders/basic/{bb_hash}", query_params={"count": 1}), self.test_rest_request(f"/blockfilterheaders/basic/5/{bb_hash}"))
 
+        self.log.info("Test the /deploymentinfo URI")
+
+        deployment_info = self.nodes[0].getdeploymentinfo()
+        assert_equal(deployment_info, self.test_rest_request('/deploymentinfo'))
+
+        non_existing_blockhash = '42759cde25462784395a337460bde75f58e73d3f08bd31fdc3507cbac856a2c4'
+        resp = self.test_rest_request(f'/deploymentinfo/{non_existing_blockhash}', ret_type=RetType.OBJ, status=400)
+        assert_equal(resp.read().decode('utf-8').rstrip(), "Block not found")
+
+        resp = self.test_rest_request(f"/deploymentinfo/{INVALID_PARAM}", ret_type=RetType.OBJ, status=400)
+        assert_equal(resp.read().decode('utf-8').rstrip(), f"Invalid hash: {INVALID_PARAM}")
 
 if __name__ == '__main__':
     RESTTest().main()

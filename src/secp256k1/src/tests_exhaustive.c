@@ -4,10 +4,6 @@
  * file COPYING or https://www.opensource.org/licenses/mit-license.php.*
  ***********************************************************************/
 
-#if defined HAVE_CONFIG_H
-#include "libsecp256k1-config.h"
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -22,12 +18,13 @@
 #include "assumptions.h"
 #include "group.h"
 #include "testrand_impl.h"
-#include "ecmult_gen_prec_impl.h"
+#include "ecmult_compute_table_impl.h"
+#include "ecmult_gen_compute_table_impl.h"
 
 static int count = 2;
 
 /** stolen from tests.c */
-void ge_equals_ge(const secp256k1_ge *a, const secp256k1_ge *b) {
+static void ge_equals_ge(const secp256k1_ge *a, const secp256k1_ge *b) {
     CHECK(a->infinity == b->infinity);
     if (a->infinity) {
         return;
@@ -36,7 +33,7 @@ void ge_equals_ge(const secp256k1_ge *a, const secp256k1_ge *b) {
     CHECK(secp256k1_fe_equal_var(&a->y, &b->y));
 }
 
-void ge_equals_gej(const secp256k1_ge *a, const secp256k1_gej *b) {
+static void ge_equals_gej(const secp256k1_ge *a, const secp256k1_gej *b) {
     secp256k1_fe z2s;
     secp256k1_fe u1, u2, s1, s2;
     CHECK(a->infinity == b->infinity);
@@ -53,7 +50,7 @@ void ge_equals_gej(const secp256k1_ge *a, const secp256k1_gej *b) {
     CHECK(secp256k1_fe_equal_var(&s1, &s2));
 }
 
-void random_fe(secp256k1_fe *x) {
+static void random_fe(secp256k1_fe *x) {
     unsigned char bin[32];
     do {
         secp256k1_testrand256(bin);
@@ -73,7 +70,7 @@ SECP256K1_INLINE static int skip_section(uint64_t* iter) {
     return ((((uint32_t)*iter ^ (*iter >> 32)) * num_cores) >> 32) != this_core;
 }
 
-int secp256k1_nonce_function_smallint(unsigned char *nonce32, const unsigned char *msg32,
+static int secp256k1_nonce_function_smallint(unsigned char *nonce32, const unsigned char *msg32,
                                       const unsigned char *key32, const unsigned char *algo16,
                                       void *data, unsigned int attempt) {
     secp256k1_scalar s;
@@ -93,7 +90,7 @@ int secp256k1_nonce_function_smallint(unsigned char *nonce32, const unsigned cha
     return 1;
 }
 
-void test_exhaustive_endomorphism(const secp256k1_ge *group) {
+static void test_exhaustive_endomorphism(const secp256k1_ge *group) {
     int i;
     for (i = 0; i < EXHAUSTIVE_TEST_ORDER; i++) {
         secp256k1_ge res;
@@ -102,7 +99,7 @@ void test_exhaustive_endomorphism(const secp256k1_ge *group) {
     }
 }
 
-void test_exhaustive_addition(const secp256k1_ge *group, const secp256k1_gej *groupj) {
+static void test_exhaustive_addition(const secp256k1_ge *group, const secp256k1_gej *groupj) {
     int i, j;
     uint64_t iter = 0;
 
@@ -162,7 +159,7 @@ void test_exhaustive_addition(const secp256k1_ge *group, const secp256k1_gej *gr
     }
 }
 
-void test_exhaustive_ecmult(const secp256k1_ge *group, const secp256k1_gej *groupj) {
+static void test_exhaustive_ecmult(const secp256k1_ge *group, const secp256k1_gej *groupj) {
     int i, j, r_log;
     uint64_t iter = 0;
     for (r_log = 1; r_log < EXHAUSTIVE_TEST_ORDER; r_log++) {
@@ -198,7 +195,7 @@ static int ecmult_multi_callback(secp256k1_scalar *sc, secp256k1_ge *pt, size_t 
     return 1;
 }
 
-void test_exhaustive_ecmult_multi(const secp256k1_context *ctx, const secp256k1_ge *group) {
+static void test_exhaustive_ecmult_multi(const secp256k1_context *ctx, const secp256k1_ge *group) {
     int i, j, k, x, y;
     uint64_t iter = 0;
     secp256k1_scratch *scratch = secp256k1_scratch_create(&ctx->error_callback, 4096);
@@ -228,7 +225,7 @@ void test_exhaustive_ecmult_multi(const secp256k1_context *ctx, const secp256k1_
     secp256k1_scratch_destroy(&ctx->error_callback, scratch);
 }
 
-void r_from_k(secp256k1_scalar *r, const secp256k1_ge *group, int k, int* overflow) {
+static void r_from_k(secp256k1_scalar *r, const secp256k1_ge *group, int k, int* overflow) {
     secp256k1_fe x;
     unsigned char x_bin[32];
     k %= EXHAUSTIVE_TEST_ORDER;
@@ -238,7 +235,7 @@ void r_from_k(secp256k1_scalar *r, const secp256k1_ge *group, int k, int* overfl
     secp256k1_scalar_set_b32(r, x_bin, overflow);
 }
 
-void test_exhaustive_verify(const secp256k1_context *ctx, const secp256k1_ge *group) {
+static void test_exhaustive_verify(const secp256k1_context *ctx, const secp256k1_ge *group) {
     int s, r, msg, key;
     uint64_t iter = 0;
     for (s = 1; s < EXHAUSTIVE_TEST_ORDER; s++) {
@@ -291,7 +288,7 @@ void test_exhaustive_verify(const secp256k1_context *ctx, const secp256k1_ge *gr
     }
 }
 
-void test_exhaustive_sign(const secp256k1_context *ctx, const secp256k1_ge *group) {
+static void test_exhaustive_sign(const secp256k1_context *ctx, const secp256k1_ge *group) {
     int i, j, k;
     uint64_t iter = 0;
 
@@ -341,15 +338,15 @@ void test_exhaustive_sign(const secp256k1_context *ctx, const secp256k1_ge *grou
 }
 
 #ifdef ENABLE_MODULE_RECOVERY
-#include "src/modules/recovery/tests_exhaustive_impl.h"
+#include "modules/recovery/tests_exhaustive_impl.h"
 #endif
 
 #ifdef ENABLE_MODULE_EXTRAKEYS
-#include "src/modules/extrakeys/tests_exhaustive_impl.h"
+#include "modules/extrakeys/tests_exhaustive_impl.h"
 #endif
 
 #ifdef ENABLE_MODULE_SCHNORRSIG
-#include "src/modules/schnorrsig/tests_exhaustive_impl.h"
+#include "modules/schnorrsig/tests_exhaustive_impl.h"
 #endif
 
 int main(int argc, char** argv) {
@@ -389,12 +386,13 @@ int main(int argc, char** argv) {
         printf("running tests for core %lu (out of [0..%lu])\n", (unsigned long)this_core, (unsigned long)num_cores - 1);
     }
 
-    /* Recreate the ecmult_gen table using the right generator (as selected via EXHAUSTIVE_TEST_ORDER) */
-    secp256k1_ecmult_gen_create_prec_table(&secp256k1_ecmult_gen_prec_table[0][0], &secp256k1_ge_const_g, ECMULT_GEN_PREC_BITS);
+    /* Recreate the ecmult{,_gen} tables using the right generator (as selected via EXHAUSTIVE_TEST_ORDER) */
+    secp256k1_ecmult_gen_compute_table(&secp256k1_ecmult_gen_prec_table[0][0], &secp256k1_ge_const_g, ECMULT_GEN_PREC_BITS);
+    secp256k1_ecmult_compute_two_tables(secp256k1_pre_g, secp256k1_pre_g_128, WINDOW_G, &secp256k1_ge_const_g);
 
     while (count--) {
         /* Build context */
-        ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+        ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
         secp256k1_testrand256(rand32);
         CHECK(secp256k1_context_randomize(ctx, rand32));
 
